@@ -1,7 +1,6 @@
 import json
 import requests
 import datetime
-import urllib
 from .exceptions import ShareaboutsApiException
 from .models import ShareaboutsAccount
 
