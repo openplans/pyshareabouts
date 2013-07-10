@@ -10,9 +10,9 @@ import sys
 name = 'shareabouts'
 package = 'shareabouts'
 description = 'A Python adapter for the Shareabouts API'
-url = 'http://github.com/.../.../'
-author = ''
-author_email = ''
+url = 'https://github.com/openplans/pyshareabouts'
+author = 'Mjumbe Poe'
+author_email = 'mpoe@openplans.org'
 license = 'BSD'
 install_requires = ['requests>=1.2']
 
