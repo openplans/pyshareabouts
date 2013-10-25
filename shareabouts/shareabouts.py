@@ -3,7 +3,6 @@ import requests
 import datetime
 import urllib
 
-__version__ = '1.0.0'
 
 class ShareaboutsEncoder (json.JSONEncoder):
     def default(self, obj):
@@ -18,14 +17,13 @@ class ShareaboutsApiException (Exception):
 
 class ShareaboutsApi (object):
     uri_templates = {
-        'dataset_collection': r'{username}/datasets/',
-        'dataset_instance': r'{username}/datasets/{slug}/',
-        'keys_collection': r'{username}/datasets/{dataset_slug}/keys/',
-        'place_collection': r'{username}/datasets/{dataset_slug}/places/',
-        'place_instance': r'{username}/datasets/{dataset_slug}/places/{pk}/',
-        'submission_collection': r'{username}/datasets/{dataset_slug}/places/{place_pk}/{type}/',
-        'submission_instance': r'{username}/datasets/{dataset_slug}/places/{place_pk}/{type}/{pk}/',
-        'all_submissions_collection': r'{username}/datasets/{dataset_slug}/{type}/',
+        'dataset_collection': r'{username}/datasets',
+        'dataset_instance': r'{username}/datasets/{slug}',
+        'place_collection': r'{username}/datasets/{dataset_slug}/places',
+        'place_instance': r'{username}/datasets/{dataset_slug}/places/{pk}',
+        'submission_collection': r'{username}/datasets/{dataset_slug}/places/{place_pk}/{type}',
+        'submission_instance': r'{username}/datasets/{dataset_slug}/places/{place_pk}/{type}/{pk}',
+        'all_submissions_collection': r'{username}/datasets/{dataset_slug}/{type}',
     }
 
     def __init__(self, root='/api/v1/'):
@@ -132,12 +130,12 @@ class ShareaboutsModel (object):
         if 'url' in self:
             return self['url']
         elif self.collection and self._pk_attr in self:
-            return '{0}{1}/'.format(self.collection.url(), self.key(), '/')
+            return '{0}{1}'.format(self.collection.url(), self.key())
         else:
             raise ShareaboutsApiException(
                 'Model {0} has no url attribute.'.format(self))
 
-    def fetch(self):
+    def fetch(self, **options):
         api, url = self.api(), self.url()
         querystring = urllib.urlencode(options)
         fetched_data = api._get_parsed_data('?'.join([url, querystring]))
@@ -348,7 +346,7 @@ class ShareaboutsPlaceSet (ShareaboutsCollection):
         return inst
 
     def url(self):
-        return self.dataset.url() + 'places/'
+        return self.dataset.url() + 'places'
 
 
 class ShareaboutsSubmission (ShareaboutsModel):
@@ -373,4 +371,4 @@ class ShareaboutsSubmissionSet (ShareaboutsCollection):
         return ShareaboutsSubmissionSet(self._api, self.parent, type)
 
     def url(self):
-        return self.parent.url() + self.type + '/'
+        return self.parent.url() + self.type
