@@ -1,7 +1,15 @@
+from __future__ import unicode_literals
+
 import json
 import requests
 import datetime
-import urllib
+
+try:
+    # Python 2
+    from urllib import urlencode
+except ImportError:
+    # Python 3
+    from urllib.parse import urlencode
 
 
 class ShareaboutsEncoder (json.JSONEncoder):
@@ -29,7 +37,7 @@ class ShareaboutsApi (object):
     def __init__(self, root='/api/v1/'):
         self.uri_root = root
 
-    def __unicode__(self):
+    def __str__(self):
         return '<Shareabouts API object with root "{0}">'.format(self.uri_root)
 
     def build_uri(self, name, *args, **kwargs):
@@ -114,11 +122,11 @@ class ShareaboutsModel (object):
         self._data = dict(*args, **kwargs)
         self.collection = collection
 
-    def __unicode__(self):
+    def __str__(self):
         return "<%s %s %s>" % (self.__class__.__name__, self.get(self._pk_attr), self._data)
 
     def __repr__(self):
-        return unicode(self)
+        return str(self)
 
     def api(self):
         return self._api
@@ -130,17 +138,21 @@ class ShareaboutsModel (object):
         if 'url' in self:
             return self['url']
         elif self.collection and self._pk_attr in self:
-            return '{0}{1}'.format(self.collection.url(), self.key())
+            return '{0}/{1}'.format(self.collection.url(), self.key())
         else:
             raise ShareaboutsApiException(
                 'Model {0} has no url attribute.'.format(self))
 
+    def parse(self, raw_data):
+        return raw_data
+
     def fetch(self, **options):
         api, url = self.api(), self.url()
-        querystring = urllib.urlencode(options)
-        fetched_data = api._get_parsed_data('?'.join([url, querystring]))
+        querystring = urlencode(options)
+        raw_data = api._get_parsed_data('?'.join([url, querystring]))
+        inst_data = self.parse(raw_data)
         self.clear()
-        self.update(fetched_data)
+        self.update(inst_data)
         return self
 
     def has_key(self):
@@ -190,11 +202,11 @@ class ShareaboutsCollection (object):
                if pk_attr in inst_data]
         self._data_by_id = dict(zip(ids, data))
 
-    def __unicode__(self):
+    def __str__(self):
         return "<%s %s>" % (self.__class__.__name__, self._data)
 
     def __repr__(self):
-        return unicode(self)
+        return str(self)
 
     def api(self):
         return self._api
@@ -215,10 +227,14 @@ class ShareaboutsCollection (object):
         pk_attr = self._model_class._pk_attr
         return data.get(pk_attr, None)
 
+    def parse(self, raw_data):
+        return raw_data
+
     def fetch(self, **options):
         api, url = self.api(), self.url()
-        querystring = urllib.urlencode(options)
-        collection_data = api._get_parsed_data('?'.join([url, querystring]))
+        querystring = urlencode(options)
+        raw_data = api._get_parsed_data('?'.join([url, querystring]))
+        collection_data = self.parse(raw_data)
         self.update(collection_data)
         return self
 
@@ -346,7 +362,7 @@ class ShareaboutsPlaceSet (ShareaboutsCollection):
         return inst
 
     def url(self):
-        return self.dataset.url() + 'places'
+        return self.dataset.url() + '/places'
 
 
 class ShareaboutsSubmission (ShareaboutsModel):
@@ -371,4 +387,4 @@ class ShareaboutsSubmissionSet (ShareaboutsCollection):
         return ShareaboutsSubmissionSet(self._api, self.parent, type)
 
     def url(self):
-        return self.parent.url() + self.type
+        return self.parent.url() + '/' + self.type
