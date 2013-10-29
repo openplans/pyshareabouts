@@ -30,13 +30,14 @@ class ShareaboutsApi (object):
         'dataset_instance': r'{username}/datasets/{slug}',
         'place_collection': r'{username}/datasets/{dataset_slug}/places',
         'place_instance': r'{username}/datasets/{dataset_slug}/places/{pk}',
-        'submission_collection': r'{username}/datasets/{dataset_slug}/places/{place_pk}/{type}',
-        'submission_instance': r'{username}/datasets/{dataset_slug}/places/{place_pk}/{type}/{pk}',
-        'all_submissions_collection': r'{username}/datasets/{dataset_slug}/{type}',
+        'submission_collection': r'{username}/datasets/{dataset_slug}/places/{place_pk}/{set_name}',
+        'submission_instance': r'{username}/datasets/{dataset_slug}/places/{place_pk}/{set_name}/{pk}',
+        'all_submissions_collection': r'{username}/datasets/{dataset_slug}/{set_name}',
     }
 
-    def __init__(self, root='/api/v1/'):
+    def __init__(self, root='http://localhost:8000/api/v2/'):
         self.uri_root = root
+        self.accounts = ShareaboutsAccountSet(self)
 
     def __str__(self):
         return '<Shareabouts API object with root "{0}">'.format(self.uri_root)
@@ -108,7 +109,9 @@ class ShareaboutsApi (object):
         return fetched_data
 
     def account(self, account_username):
-        owner = ShareaboutsAccount(self, username=account_username)
+        owner = self.accounts.get(account_username)
+        if owner is None:
+            owner = self.accounts.add({'username': account_username})
         return owner
 
 
@@ -139,7 +142,11 @@ class ShareaboutsModel (object):
         if 'url' in self:
             return self['url']
         elif self.collection and self._pk_attr in self:
-            return '{0}/{1}'.format(self.collection.url(), self.key())
+            collection_url = self.collection.url()
+            if collection_url.endswith('/'):
+                return ''.join([collection_url, self.key()])
+            else:
+                return '/'.join([collection_url, self.key()])
         else:
             raise ShareaboutsApiException(
                 'Model {0} has no url attribute.'.format(self))
@@ -339,8 +346,16 @@ class ShareaboutsAccount (ShareaboutsModel):
     def dataset(self, dataset_slug):
         dataset = self.datasets.get(dataset_slug)
         if dataset is None:
-            dataset = self.datasets._make_inst({'slug': dataset_slug})
+            dataset = self.datasets.add({'slug': dataset_slug})
         return dataset
+
+
+class ShareaboutsAccountSet (ShareaboutsCollection):
+    _model_class = ShareaboutsAccount
+
+    def __init__(self, api_proxy, *args, **kwargs):
+        self._url = api_proxy.uri_root
+        super(ShareaboutsAccountSet, self).__init__(api_proxy, *args, **kwargs)
 
 
 class ShareaboutsDataset (ShareaboutsModel):
@@ -351,9 +366,27 @@ class ShareaboutsDataset (ShareaboutsModel):
         self.places = ShareaboutsPlaceSet(api_proxy, self)
         self.submissions = ShareaboutsSubmissionSet(api_proxy, self)
 
-    def __getattr__(self, submission_set_type):
+    @property
+    def submission_sets(self):
+        try:
+            return self.submissions.sets.values()
+        except AttributeError:
+            return []
+
+    def serialize(self):
+        data = super(ShareaboutsDataset, self).serialize()
+        try:
+            data['submission_sets'] = {
+                sset.name: sset.serialize()
+                for sset in self.submission_sets
+            }
+        except AttributeError:
+            data['submission_sets'] = {}
+        return data
+
+    def __getattr__(self, submission_set_name):
         # Assume that unmatched attributes refer to a submission set
-        return self.submissions.of_type(submission_set_type)
+        return self.submissions.in_set(submission_set_name)
 
 
 class ShareaboutsDatasetSet (ShareaboutsCollection):
@@ -369,7 +402,8 @@ class ShareaboutsDatasetSet (ShareaboutsCollection):
         return dataset
 
     def url(self):
-        return self.api().build_uri('dataset_collection', username=self.owner.username)
+        return self.owner.url() + '/datasets'
+
 
 def geojson_method(fname):
     def conditional_method(self, key, *args, **kwargs):
@@ -387,9 +421,9 @@ class ShareaboutsPlace (ShareaboutsModel):
         super(ShareaboutsPlace, self).__init__(api_proxy, *args, **kwargs)
         self.submissions = ShareaboutsSubmissionSet(api_proxy, self)
 
-    def __getattr__(self, submission_set_type):
+    def __getattr__(self, submission_set_name):
         # Assume that unmatched attributes refer to a submission set
-        return self.submissions.of_type(submission_set_type)
+        return self.submissions.in_set(submission_set_name)
 
     def has_key(self):
         return 'id' in self
@@ -441,13 +475,24 @@ class ShareaboutsSubmission (ShareaboutsModel):
 class ShareaboutsSubmissionSet (ShareaboutsCollection):
     _model_class = ShareaboutsSubmission
 
-    def __init__(self, api_proxy, place_or_dataset, type='submissions'):
+    def __init__(self, api_proxy, place_or_dataset, set_name='submissions'):
         self.parent = place_or_dataset
-        self.type = type
+        self.name = set_name
         super(ShareaboutsSubmissionSet, self).__init__(api_proxy)
 
-    def of_type(self, type):
-        return ShareaboutsSubmissionSet(self._api, self.parent, type)
+    def in_set(self, set_name):
+        try:
+            return self.sets[set_name]
+
+        # If it doesn't have a _sets attribute, set it.
+        except AttributeError:
+            self.sets = {set_name: ShareaboutsSubmissionSet(self._api, self.parent, set_name)}
+            return self.sets[set_name]
+
+        # If it has a _sets attribute, but no set_name key, set it.
+        except KeyError:
+            self.sets[set_name] = ShareaboutsSubmissionSet(self._api, self.parent, set_name)
+            return self.sets[set_name]
 
     def url(self):
-        return self.parent.url() + '/' + self.type
+        return self.parent.url() + '/' + self.name
