@@ -1,6 +1,7 @@
-from __future__ import unicode_literals
+from __future__ import unicode_literals, division
 
 import json
+import math
 import requests
 import datetime
 
@@ -158,18 +159,17 @@ class ShareaboutsModel (object):
     def has_key(self):
         return self._pk_attr in self
 
-    def save(self, new_data=None):
+    def serialize(self):
+        return self._data
+
+    def save(self):
         api = self.api()
 
-        send_data = self._data.copy()
+        send_data = self.serialize()
 
         for field in self._excluded_fields:
             if field in send_data:
                 del send_data[field]
-
-        if new_data:
-            send_data = send_data.copy()
-            send_data.update(new_data)
 
         if self.has_key():
             response_data = api.send_and_parse('PUT', self.url(), send_data, [200])
@@ -191,16 +191,16 @@ class ShareaboutsModel (object):
 
 class ShareaboutsCollection (object):
     _model_class = ShareaboutsModel
+    _metadata_attr = 'metadata'
+    _results_attr = 'results'
 
     def __init__(self, api_proxy, model_class=None, *args, **kwargs):
         self._api = api_proxy
         self._model_class = model_class or self._model_class
-        self._data = data = list(*args, **kwargs)
-        pk_attr = self._model_class._pk_attr
-        ids = [inst_data[pk_attr]
-               for inst_data in data
-               if pk_attr in inst_data]
-        self._data_by_id = dict(zip(ids, data))
+        self._data = []
+        self._data_by_id = {}
+
+        self.update(list(*args, **kwargs))
 
     def __str__(self):
         return "<%s %s>" % (self.__class__.__name__, self._data)
@@ -227,42 +227,80 @@ class ShareaboutsCollection (object):
         pk_attr = self._model_class._pk_attr
         return data.get(pk_attr, None)
 
-    def parse(self, raw_data):
-        return raw_data
+    def parse_page_count(self, raw_data):
+        assert self._metadata_attr in raw_data
+        assert self._results_attr in raw_data
 
-    def fetch(self, **options):
-        api, url = self.api(), self.url()
+        metadata = raw_data[self._metadata_attr]
+
+        # If this is not the last page, then calculate page count based on the
+        # number of results on this page.
+        if metadata['next'] and len(raw_data[self._results_attr]) > 0:
+            self.page_count = int(math.ceil(raw_data[self._metadata_attr].get('length') / len(raw_data[self._results_attr])))
+
+        # If this is the last page, but there is no previous page, then this
+        # is the first of one page.
+        elif not metadata['previous']:
+            self.page_count = 1
+
+        # Otherwise we're on the last page and we can just set the page count
+        # to the current page number
+        else:
+            self.page_count = raw_data[self._metadata_attr].get('page')
+
+    def parse(self, raw_data):
+        self.parse_page_count(raw_data)
+        return raw_data[self._results_attr]
+
+    def fetch(self, url=None, **options):
+        api, url = self.api(), url or self.url()
         querystring = urlencode(options)
-        raw_data = api._get_parsed_data('?'.join([url, querystring]))
+        if '?' not in url:
+            full_url = '?'.join([url, querystring])
+        else:
+            full_url = '&'.join([url, querystring])
+
+        raw_data = api._get_parsed_data(full_url)
         collection_data = self.parse(raw_data)
         self.update(collection_data)
-        return self
+        return raw_data
+
+    def fetch_all(self, url=None, **options):
+        page_url = url or self.url()
+
+        while page_url:
+            page_data = self.fetch(url=page_url, **options)
+            yield page_data
+            page_url = page_data[self._metadata_attr].get('next')
 
     def create(self, inst_data):
         inst = self._make_inst(inst_data)
         inst.save()
-        self.add(inst_data)
+        self.add(inst)
         return inst
+
+    def serialize(self):
+        return [inst.serialize() for inst in self]
 
     # Dictionary-like interface
     def get(self, key, default=None):
-        pk_attr = self._model_class._pk_attr
-        inst_data = self._data_by_id.get(key, None)
-        if inst_data is None:
-            return default
-        else:
-            return self._make_inst(inst_data)
+        try:
+            return self._data_by_id[key]
+        except KeyError:
+            if isinstance(default, dict):
+                return self._make_inst(default)
+            else:
+                return default
 
     # List-like interface
     def __getitem__(self, index):
-        inst_data = self._data[index]
-        return self._make_inst(inst_data)
+        return self._data[index]
 
     def __setitem__(self, index, value):
         self._data[index] = value
 
     def __iter__(self):
-        return iter(self._make_inst(inst_data) for inst_data in self._data)
+        return iter(self._data)
 
     # Set-like interface
     def __contains__(self, inst_data):
@@ -275,9 +313,12 @@ class ShareaboutsCollection (object):
         if inst:
             inst.update(inst_data)
         else:
-            self._data.append(inst_data)
+            inst = self._make_inst(inst_data)
+            self._data.append(inst)
             if inst_id is not None:
-                self._data_by_id[inst_id] = inst_data
+                self._data_by_id[inst_id] = inst
+                # NOTE: When the instance's id changes, we need to notice.
+        return inst
 
     def update(self, collection_data):
         for inst_data in collection_data:
@@ -330,6 +371,14 @@ class ShareaboutsDatasetSet (ShareaboutsCollection):
     def url(self):
         return self.api().build_uri('dataset_collection', username=self.owner.username)
 
+def geojson_method(fname):
+    def conditional_method(self, key, *args, **kwargs):
+        if key in ('geometry', 'id'):
+            f = getattr(self._data, fname)
+        else:
+            f = getattr(self._data['properties'], fname)
+        return f(key, *args, **kwargs)
+    return conditional_method
 
 class ShareaboutsPlace (ShareaboutsModel):
     _excluded_fields = ShareaboutsModel._excluded_fields + ['dataset']
@@ -348,9 +397,23 @@ class ShareaboutsPlace (ShareaboutsModel):
     def key(self):
         return self.get('id')
 
+    # Dictionary interface
+    __getitem__ = geojson_method('__getitem__')
+    __setitem__ = geojson_method('__setitem__')
+    get = geojson_method('get')
+
+    def __iter__(self):
+        for key in self._data:
+            if key in ('geometry', 'id'):
+                yield key
+        for key in self._data['properties']:
+            if key not in ('geometry', 'id'):
+                yield key
+
 
 class ShareaboutsPlaceSet (ShareaboutsCollection):
     _model_class = ShareaboutsPlace
+    _results_attr = 'features'
 
     def __init__(self, api_proxy, dataset):
         self.dataset = dataset
