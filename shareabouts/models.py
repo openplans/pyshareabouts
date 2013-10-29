@@ -4,6 +4,7 @@ import json
 import math
 import requests
 import datetime
+from shareabouts.exceptions import ShareaboutsApiException
 
 try:
     # Python 2
@@ -13,113 +14,9 @@ except ImportError:
     from urllib.parse import urlencode
 
 
-class ShareaboutsEncoder (json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, (datetime.date, datetime.datetime)):
-            return obj.isoformat()
-        return json.JSONEncoder.default(self, obj)
-
-
-class ShareaboutsApiException (Exception):
-    pass
-
-
-class ShareaboutsApi (object):
-    uri_templates = {
-        'dataset_collection': r'{username}/datasets',
-        'dataset_instance': r'{username}/datasets/{slug}',
-        'place_collection': r'{username}/datasets/{dataset_slug}/places',
-        'place_instance': r'{username}/datasets/{dataset_slug}/places/{pk}',
-        'submission_collection': r'{username}/datasets/{dataset_slug}/places/{place_pk}/{set_name}',
-        'submission_instance': r'{username}/datasets/{dataset_slug}/places/{place_pk}/{set_name}/{pk}',
-        'all_submissions_collection': r'{username}/datasets/{dataset_slug}/{set_name}',
-    }
-
-    def __init__(self, root='http://localhost:8000/api/v2/'):
-        self.uri_root = root
-        self.accounts = ShareaboutsAccountSet(self)
-
-    def __str__(self):
-        return '<Shareabouts API object with root "{0}">'.format(self.uri_root)
-
-    def build_uri(self, name, *args, **kwargs):
-        uri_template = self.uri_templates[name]
-        uri_path = uri_template.format(*args, **kwargs)
-        return (self.uri_root + uri_path)
-
-    def authenticate_with_django_request(self, request):
-        self.authenticate_with_csrf_token(request.META.get('CSRF_COOKIE', ''),
-                                          request.META.get('HTTP_COOKIE', ''))
-
-    def authenticate_with_csrf_token(self, token, cookies):
-        self.csrf_token = token
-        self.cookies = cookies
-
-    def authenticate_with_key(self, key):
-        self.key = key
-
-    def send(self, method, url, data=None):
-        if data is not None:
-            data = json.dumps(data, cls=ShareaboutsEncoder)
-
-        headers = {'Content-type': 'application/json',
-                   'Accept': 'application/json'}
-
-        # Set authentication headers
-        if hasattr(self, 'csrf_token') and hasattr(self, 'cookies'):
-            headers.update({
-                'Cookie': self.cookies,
-                'X-CSRFToken': self.csrf_token
-            })
-
-        if hasattr(self, 'key'):
-            headers.update({
-                'X-Shareabouts-Key': self.key
-            })
-
-        # Explicitly set the content length for delete
-        if method == 'DELETE':
-            headers.update({'Content-Length': '0'})
-
-        response = requests.request(method, url, data=data, headers=headers)
-        return response
-
-    def get(self, url, default=None):
-        """
-        Returns decoded data from a GET request, or default on non-200
-        responses.
-        """
-        res = self.send('GET', url)
-        res_json = res.text
-        return (json.loads(res_json) if res.status_code == 200 else default)
-
-    def send_and_parse(self, method, url, data=None, valid=[200]):
-        response = self.send(method, url, data)
-        if response.status_code in valid:
-            fetched_data = json.loads(response.text)
-            return fetched_data
-        else:
-            raise ShareaboutsApiException((
-                  'Did not get a valid response from {0}. Instead, got a {1} '
-                  'with the text "{2}".'
-                ).format(url, response.status_code, response.text))
-
-    def _get_parsed_data(self, url):
-        fetched_data = self.send_and_parse('GET', url)
-        return fetched_data
-
-    def account(self, account_username):
-        owner = self.accounts.get(account_username)
-        if owner is None:
-            owner = self.accounts.add({'username': account_username})
-        return owner
-
-
-# Models and Collections
-
 class ShareaboutsModel (object):
     _pk_attr = 'id'
-    _excluded_fields = ['id', 'created_datetime', 'updated_datetime']
+    _excluded_fields = ['id', 'url', 'created_datetime', 'updated_datetime']
 
     def __init__(self, api_proxy, collection=None, *args, **kwargs):
         self._api = api_proxy
@@ -163,6 +60,9 @@ class ShareaboutsModel (object):
         self.update(inst_data)
         return self
 
+    def is_new(self):
+        return self._pk_attr not in self
+    
     def has_key(self):
         return self._pk_attr in self
 
@@ -172,7 +72,7 @@ class ShareaboutsModel (object):
     def save(self):
         api = self.api()
 
-        send_data = self.serialize()
+        send_data = self.serialize().copy()
 
         for field in self._excluded_fields:
             if field in send_data:
@@ -184,6 +84,14 @@ class ShareaboutsModel (object):
             response_data = api.send_and_parse('POST', self.collection.url(), send_data, [201])
 
         self.update(response_data)
+
+    def destroy(self):
+        if not self.is_new():
+            response = api.send('DELETE', self.url())
+            
+        if self.collection is not None:
+            self.collection.remove(self)
+            self.collection = None
 
     # Dictionary interface
     def __getitem__(self, key): return self._data[key]
@@ -330,6 +238,10 @@ class ShareaboutsCollection (object):
     def update(self, collection_data):
         for inst_data in collection_data:
             self.add(inst_data)
+    
+    def remove(self, inst):
+        # TODO: implement removal.
+        pass
 
 
 class ShareaboutsAccount (ShareaboutsModel):
@@ -388,6 +300,10 @@ class ShareaboutsDataset (ShareaboutsModel):
         # Assume that unmatched attributes refer to a submission set
         return self.submissions.in_set(submission_set_name)
 
+    def is_new(self):
+        # Even new datasets have a slug, so we check something else
+        return 'created_datetime' not in self
+
 
 class ShareaboutsDatasetSet (ShareaboutsCollection):
     _model_class = ShareaboutsDataset
@@ -415,7 +331,7 @@ def geojson_method(fname):
     return conditional_method
 
 class ShareaboutsPlace (ShareaboutsModel):
-    _excluded_fields = ShareaboutsModel._excluded_fields + ['dataset']
+    _excluded_fields = ShareaboutsModel._excluded_fields + ['dataset', 'attachments', 'submissions', 'id']
 
     def __init__(self, api_proxy, *args, **kwargs):
         super(ShareaboutsPlace, self).__init__(api_proxy, *args, **kwargs)
@@ -463,7 +379,7 @@ class ShareaboutsPlaceSet (ShareaboutsCollection):
 
 
 class ShareaboutsSubmission (ShareaboutsModel):
-    _excluded_fields = ShareaboutsModel._excluded_fields + ['dataset']
+    _excluded_fields = ShareaboutsModel._excluded_fields + ['place', 'attachments', 'id']
 
     def has_key(self):
         return 'id' in self
