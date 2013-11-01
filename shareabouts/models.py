@@ -287,6 +287,7 @@ class ShareaboutsDataset (ShareaboutsModel):
 
     def serialize(self):
         data = super(ShareaboutsDataset, self).serialize()
+        data['places'] = self.places.serialize()
         try:
             data['submission_sets'] = {
                 sset.name: sset.serialize()
