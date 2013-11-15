@@ -184,6 +184,7 @@ class ShareaboutsCollection (object):
         page_url = url or self.url()
 
         while page_url:
+            options.setdefault('page_size', 250)
             page_data = self.fetch(url=page_url, **options)
             yield page_data
             page_url = page_data[self._metadata_attr].get('next')
